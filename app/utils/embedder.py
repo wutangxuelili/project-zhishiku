@@ -1,10 +1,15 @@
 import os
 
-from sentence_transformers import SentenceTransformer
-
 from app.config import settings
 
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")  # 确保镜像在导入前生效
+# 必须在导入 sentence_transformers(huggingface_hub) 之前设置：
+# huggingface_hub 在 import 时就会读取 HF_ENDPOINT 并固化到 constants.ENDPOINT，
+# 放在 import 之后设置是无效的。
+# app.config 里的 load_dotenv() 不会覆盖已存在的环境变量，
+# 所以先让 .env 的值生效，这里只作为 .env 未配置时的兜底。
+os.environ.setdefault("HF_ENDPOINT", "https://huggingface.co")
+
+from sentence_transformers import SentenceTransformer
 
 _model: SentenceTransformer | None = None
 

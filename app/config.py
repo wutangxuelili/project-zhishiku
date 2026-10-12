@@ -27,6 +27,8 @@ class Settings:
     # Embedding
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
     EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "512"))
+    # HuggingFace 端点：模型本地无缓存时从这里下载
+    HF_ENDPOINT: str = os.getenv("HF_ENDPOINT", "https://huggingface.co")
 
     # 检索
     RETRIEVAL_CANDIDATES: int = int(os.getenv("RETRIEVAL_CANDIDATES", "15"))

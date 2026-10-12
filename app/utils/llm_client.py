@@ -1,6 +1,10 @@
+import logging
+
 from openai import OpenAI
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 _client: OpenAI | None = None
 
@@ -17,7 +21,7 @@ def get_llm_client() -> OpenAI:
             api_key = settings.LLM_API_KEY
 
         _client = OpenAI(base_url=base_url, api_key=api_key, timeout=60.0)
-        print(f"[LLM] provider={settings.LLM_PROVIDER}, base_url={base_url}")
+        logger.info("LLM 客户端已初始化：provider=%s, base_url=%s", settings.LLM_PROVIDER, base_url)
     return _client
 
 

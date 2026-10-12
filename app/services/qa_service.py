@@ -1,8 +1,11 @@
-from app.config import settings  # noqa: F401
+import logging
+
 from app.utils.embedder import embed_query
 from app.utils.llm_client import chat
 from app.utils.qdrant_client import vector_search
 from app.utils.redis_client import append_message, get_history
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """你是一个知识库问答助手。请严格依据下方【上下文】回答用户问题。
 
@@ -23,16 +26,17 @@ def answer_question(
     """完整问答流程：检索 → 拼上下文 → LLM 生成（含多轮历史）。"""
     # 1. 读取历史
     history = get_history(session_id) if session_id else []
-    print(f"[DEBUG] session_id={session_id}")
-    print(f"[DEBUG] history={history}")
     # 2. 检索
     search_query = rewrite_query(question, history)
-    print(f"[DEBUG] 改写后：{search_query}")
     query_vec = embed_query(search_query)
     hits = vector_search(query_vec, top_k=top_k)
-    print(f"[DEBUG] 检索问题：{search_query}")
-    print(f"[DEBUG] 召回来源：{[h['metadata'].get('original_name') for h in hits]}")
-    print(f"[DEBUG] 召回章节：{[h['metadata'].get('h2') for h in hits]}")
+    logger.debug(
+        "session=%s history_turns=%d query=%r hits=%s",
+        session_id,
+        len(history),
+        search_query,
+        [(h["metadata"].get("original_name"), h["metadata"].get("h2")) for h in hits],
+    )
     # 3. 拼上下文
     if not hits:
         answer = NO_ANSWER

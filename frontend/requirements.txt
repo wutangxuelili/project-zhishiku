@@ -1,0 +1,5 @@
+# 前端（Streamlit）只需要自己的依赖，不安装后端的 torch/sentence-transformers 等大型依赖。
+# 版本与 backend 的 requirements.txt 保持一致，避免两套镜像依赖漂移。
+streamlit==1.64.0
+requests==2.34.2
+python-dotenv==1.2.3

@@ -1,9 +1,12 @@
+import logging
 import os
 
 from app.utils.embedder import embed_texts
 from app.utils.loader import SUPPORTED_SUFFIXES, load_document
 from app.utils.qdrant_client import upsert_chunks
 from app.utils.splitter import split_segments
+
+logger = logging.getLogger(__name__)
 
 
 def ingest_file(file_path: str, original_name: str | None = None) -> int:
@@ -37,7 +40,7 @@ def ingest_directory(dir_path: str) -> dict:
         if os.path.splitext(filename)[1].lower() not in SUPPORTED_SUFFIXES:
             continue
         n = ingest_file(filepath)
-        print(f"  [ok] {filename}: {n} chunks")
+        logger.info("已入库 %s：%d 个 chunk", filename, n)
         files += 1
         total_chunks += n
 

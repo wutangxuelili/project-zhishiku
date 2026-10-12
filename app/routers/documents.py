@@ -1,12 +1,12 @@
 import hashlib
 import os
-import shutil  # noqa: F401
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from app.config import settings
-from app.services.ingest_service import ingest_file
+from app.services.ingest_service import ingest_directory, ingest_file
 from app.utils.loader import SUPPORTED_SUFFIXES
 from app.utils.qdrant_client import delete_by_source, list_sources
 
@@ -19,9 +19,12 @@ async def upload_document(file: UploadFile = File(...)):  # noqa: B008
 
     返回：文件名、保存路径、入库 chunk 数。
     """
-    # 1. 校验扩展名
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in SUPPORTED_SUFFIXES:
+    # 1. 校验扩展名。
+    #    file.filename 的类型是 str | None，客户端不带文件名时会是 None，
+    #    直接丢给 os.path.splitext 会抛 TypeError 变成 500，所以先兜底成空串。
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if not filename or ext not in SUPPORTED_SUFFIXES:
         raise HTTPException(
             status_code=400,
             detail=f"仅支持 {', '.join(SUPPORTED_SUFFIXES)} 文件",
@@ -35,35 +38,47 @@ async def upload_document(file: UploadFile = File(...)):  # noqa: B008
     unique_name = f"{file_hash}{ext}"
     file_path = os.path.join(settings.UPLOAD_DIR, unique_name)
 
-    if os.path.exists(file_path):
-        return {
-            "message": "文件已存在，内容未变更",
-            "filename": unique_name,
-            "chunks": 0,
-        }
-    with open(file_path, "wb") as f:  # noqa: ASYNC230
-        f.write(content)
+    existed = os.path.exists(file_path)
+    if not existed:
+        with open(file_path, "wb") as f:  # noqa: ASYNC230
+            f.write(content)
 
+    # 3. 入库。
+    #    注意：不能因为磁盘上已经有同名文件就跳过入库。Qdrant 的数据可能被清空或
+    #    重建（换机器、删掉 volume、改了容器编排），此时只有重新入库，文档才会重新
+    #    出现在"已入库文档"里。所以这里以 Qdrant 为准，一律执行入库；
+    #    upsert_chunks 用 (source, text) 的稳定哈希当 id，重复入库是幂等的，不会产生重复数据。
     try:
-        chunk_count = ingest_file(file_path, original_name=file.filename)
+        chunk_count = ingest_file(file_path, original_name=filename)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"入库失败：{e}")
 
     return {
-        "message": "上传并入库成功",
+        "message": "文件已存在，已重新入库" if existed else "上传并入库成功",
         "filename": unique_name,
-        "original_name": file.filename,
+        "original_name": filename,
         "chunks": chunk_count,
     }
+
+
+@router.post("/reindex")
+def reindex_documents():
+    """重新扫描上传目录，把目录里的文档（重新）入库。
+
+    用于 Qdrant 数据被清空/重建后，一键恢复已有文档的索引。
+    """
+    try:
+        stats = ingest_directory(settings.UPLOAD_DIR)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"重建索引失败：{e}")
+
+    return {"message": f"已重新入库 {stats['files']} 个文件", **stats}
 
 
 @router.get("/list")
 def list_documents():
     """列出已入库的所有文档来源。"""
     return {"documents": list_sources()}
-
-
-from pydantic import BaseModel
 
 
 class DeleteRequest(BaseModel):

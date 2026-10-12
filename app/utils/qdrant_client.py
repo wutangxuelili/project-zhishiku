@@ -1,9 +1,12 @@
 import hashlib
+import logging
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 _client: QdrantClient | None = None
 
@@ -30,9 +33,9 @@ def ensure_collection() -> None:
                 distance=Distance.COSINE,
             ),
         )
-        print(f"[Qdrant]已创建集合{settings.QDRANT_COLLECTION}")
+        logger.info("已创建集合 %s", settings.QDRANT_COLLECTION)
     else:
-        print(f"[Qdrant]集合已存在:{settings.QDRANT_COLLECTION}")
+        logger.info("集合已存在：%s", settings.QDRANT_COLLECTION)
 
 
 def collection_info() -> dict:

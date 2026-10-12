@@ -34,7 +34,7 @@ def append_message(session_id: str, role: str, content: str) -> None:
     r = get_redis()
     key = f"chat:history:{session_id}"
     r.rpush(key, json.dumps({"role": role, "content": content}, ensure_ascii=False))
-    r.expire(key, settings.SESSION_EXPIRE_SECONDS)  # 24 小时过期
+    r.expire(key, settings.SESSION_EXPIRE_SECONDS)  # 过期时间由 SESSION_EXPIRE_SECONDS 决定
 
 
 def clear_history(session_id: str) -> int:

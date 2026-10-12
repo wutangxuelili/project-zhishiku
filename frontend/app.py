@@ -1,11 +1,31 @@
+# 后端地址（可通过环境变量覆盖）
+import os
+import re
 import uuid
 
 import requests
 import streamlit as st
+from dotenv import load_dotenv
 
-# 后端地址（可通过环境变量覆盖）
-BACKEND_URL = "http://127.0.0.1:8000"
-import re
+load_dotenv()
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_documents() -> list[dict]:
+    """获取已入库文档列表。
+
+    Streamlit 每次交互都会重跑整个脚本，直接请求会导致"每问一句就多打一次接口"，
+    这里用 5 秒缓存挡掉同一轮交互里的重复请求。
+    """
+    resp = requests.get(f"{BACKEND_URL}/documents/list", timeout=10)
+    resp.raise_for_status()
+    return resp.json().get("documents", [])
+
+
+def invalidate_documents_cache() -> None:
+    """入库 / 删除 / 重建索引之后调用，让下一次渲染立刻拿到最新列表。"""
+    fetch_documents.clear()
 
 
 def highlight_citations(answer: str) -> str:
@@ -92,39 +112,86 @@ if prompt := st.chat_input("请输入你的问题..."):
             "citations": citations,
         }
     )
+
+
 # ---------- 侧边栏：文件管理 ----------
+def set_flash(kind: str, message: str) -> None:
+    """暂存一条提示，等下一次 rerun 再显示。
+
+    Streamlit 中 st.success/st.error 之后紧跟 st.rerun()，本次运行的输出会被丢弃，
+    用户什么都看不到，所以用 session_state 中转一下。
+    """
+    st.session_state.flash = (kind, message)
+
+
 with st.sidebar:
     st.header("📁 文档管理")
 
+    flash = st.session_state.get("flash")
+    if flash:
+        kind, message = flash
+        (st.success if kind == "success" else st.error)(message)
+        del st.session_state["flash"]
+
     # --- 上传 ---
+    # 用 key 控制 file_uploader，上传成功后换一个 key，把已选文件清空。
+    if "uploader_round" not in st.session_state:
+        st.session_state.uploader_round = 0
     uploaded = st.file_uploader(
         "上传文档（PDF / Markdown / TXT）",
         type=["pdf", "md", "txt"],
+        key=f"uploader_{st.session_state.uploader_round}",
     )
-    if uploaded is not None and st.button("确认上传"):
+    # 按钮必须始终渲染：若写成 `uploaded is not None and st.button(...)`，
+    # Python 的 and 会短路，没选文件时按钮根本不会被渲染，看起来就像"无法上传"。
+    confirm_upload = st.button("确认上传", disabled=uploaded is None)
+
+    if confirm_upload and uploaded is not None:
         with st.spinner("上传并入库中..."):
             try:
                 files = {"file": (uploaded.name, uploaded.getvalue(), uploaded.type)}
                 resp = requests.post(
                     f"{BACKEND_URL}/documents/upload",
                     files=files,
-                    timeout=120,
+                    timeout=600,
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                st.success(f"上传成功：{data['chunks']} 个 chunk")
-                st.rerun()
+                set_flash(
+                    "success",
+                    f"{data.get('message', '上传成功')}：{data.get('chunks', 0)} 个 chunk",
+                )
             except requests.exceptions.RequestException as e:
-                st.error(f"上传失败：{e}")
+                set_flash("error", f"上传失败：{e}")
+        invalidate_documents_cache()
+        st.session_state.uploader_round += 1
+        st.rerun()
+
+    # --- 重建索引 ---
+    if st.button(
+        "🔄 重建索引",
+        help="重新扫描 documents 目录并全部入库。Qdrant 数据被清空后可用它恢复。",
+    ):
+        with st.spinner("正在重新入库..."):
+            try:
+                resp = requests.post(f"{BACKEND_URL}/documents/reindex", timeout=900)
+                resp.raise_for_status()
+                data = resp.json()
+                set_flash(
+                    "success",
+                    f"{data['message']}（{data.get('chunks', 0)} 个 chunk）",
+                )
+            except requests.exceptions.RequestException as e:
+                set_flash("error", f"重建索引失败：{e}")
+        invalidate_documents_cache()
+        st.rerun()
 
     st.divider()
 
     # --- 文档列表 ---
     st.subheader("已入库文档")
     try:
-        resp = requests.get(f"{BACKEND_URL}/documents/list", timeout=10)
-        resp.raise_for_status()
-        docs = resp.json().get("documents", [])
+        docs = fetch_documents()
     except requests.exceptions.RequestException as e:
         docs = []
         st.error(f"获取列表失败：{e}")
@@ -150,10 +217,12 @@ with st.sidebar:
                             timeout=10,
                         )
                         resp.raise_for_status()
-                        st.success("已删除")
-                        st.rerun()
+                        # 和上传一样：先暂存提示，再 rerun，否则 st.success 会被丢弃
+                        set_flash("success", f"已删除 {display_name}")
                     except requests.exceptions.RequestException as e:
-                        st.error(f"删除失败：{e}")
+                        set_flash("error", f"删除失败：{e}")
+                    invalidate_documents_cache()
+                    st.rerun()
     st.divider()
     st.subheader("💬 当前会话")
 
