@@ -239,7 +239,7 @@ documents/{sha256(文件内容)[:16]}{扩展名}
 | 模型加载 | 进程内单例 + 懒加载 + **缓存优先** | 避免每次请求加载权重；已有缓存时纯本地加载，不去 Hub 检查更新（网络不通会卡在重试上）；代价是模型常驻内存 |
 | 上下文拼接 | 直接把 Top-K 原文塞进提示词 | 简单直观、可解释性强；代价是无压缩，长文档容易超上下文窗口 |
 | 多轮改写 | 有历史时才调 LLM 改写 | 省一次 LLM 调用（第一轮不改写）；代价是第二轮起延迟增加 |
-| 前后端依赖 | 拆成两份 requirements | 前端只需 streamlit/requests/dotenv；否则前端镜像要多装约 5 GB 的 torch + CUDA |
+| 前后端依赖 | 拆成两份 requirements | 前端只需 streamlit/requests/dotenv（镜像内 40 个包 / 440 MB）；若统一成一份，前端镜像就要跟着装后端的 118 个包（含 torch 773 MB），镜像从 801 MB 涨到 2.67 GB |
 | LLM 接入 | `openai` SDK + 可配置 `base_url` | 一份代码同时支持 DeepSeek / 通义千问，换模型只改 `.env` |
 | HF 端点 | `.env` 配置，且必须在 import 模型库前生效 | `huggingface_hub` 在 import 时就把 `HF_ENDPOINT` 固化进 `constants.ENDPOINT`，之后再设无效 |
 

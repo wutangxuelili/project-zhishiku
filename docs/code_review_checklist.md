@@ -107,7 +107,7 @@ pip-audit -r requirements.txt
 
 - [x] `requirements.txt` 已锁版本 —— 119 项全部用 `==`
 - [x] 没有 Windows 专有包在 Linux 镜像里 —— `pywin32` 已加 `sys_platform == "win32"` 环境标记
-- [x] 前后端依赖分离 —— 已拆出独立的 `frontend/requirements.txt`（前端不装 torch，省下约 5 GB）
+- [x] 前后端依赖分离 —— 已拆出独立的 `frontend/requirements.txt`（前端镜像内仅 40 个包 / 440 MB；若统一则在 2.67 GB 的后端依赖之上再叠加，省下约 1.87 GB）
 - [ ] 定期跑 `pip-audit` 检查已知漏洞 —— 当前环境未安装 `pip-audit`，本轮未执行（见发现 #15）
 
 ## 十、文档
