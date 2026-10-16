@@ -9,18 +9,33 @@ logger = logging.getLogger(__name__)
 _client: OpenAI | None = None
 
 
+def get_api_key() -> str:
+    """返回当前 provider 对应的 API Key。"""
+    if settings.LLM_PROVIDER == "qwen":
+        return settings.DASHSCOPE_API_KEY
+    return settings.LLM_API_KEY
+
+
+def has_api_key() -> bool:
+    """Key 是否已配置（`.env.example` 里的占位符算未配置）。"""
+    key = get_api_key().strip()
+    return bool(key) and not key.startswith("sk-请替换")
+
+
 def get_llm_client() -> OpenAI:
     """根据配置返回 LLM 客户端单例。"""
     global _client
     if _client is None:
-        if settings.LLM_PROVIDER == "qwen":
-            base_url = settings.QWEN_BASE_URL
-            api_key = settings.DASHSCOPE_API_KEY
-        else:
-            base_url = settings.LLM_BASE_URL
-            api_key = settings.LLM_API_KEY
-
-        _client = OpenAI(base_url=base_url, api_key=api_key, timeout=60.0)
+        base_url = (
+            settings.QWEN_BASE_URL
+            if settings.LLM_PROVIDER == "qwen"
+            else settings.LLM_BASE_URL
+        )
+        _client = OpenAI(
+            base_url=base_url,
+            api_key=get_api_key(),
+            timeout=60.0,
+        )
         logger.info("LLM 客户端已初始化：provider=%s, base_url=%s", settings.LLM_PROVIDER, base_url)
     return _client
 

@@ -15,6 +15,8 @@ def get_redis() -> redis.Redis:
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
             db=settings.REDIS_DB,
+            # 空字符串按"没有密码"处理，避免传 password="" 反而触发 AUTH
+            password=settings.REDIS_PASSWORD or None,
             decode_responses=True,
             protocol=2,  # 兼容旧版 Redis
         )

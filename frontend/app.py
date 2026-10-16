@@ -88,7 +88,7 @@ if prompt := st.chat_input("请输入你的问题..."):
                     f"{BACKEND_URL}/qa/ask",
                     json={
                         "question": prompt,
-                        "top_k": 3,
+                        # 不传 top_k：由后端 .env 的 TOP_K 决定
                         "session_id": st.session_state.session_id,
                     },
                     timeout=60,
@@ -157,9 +157,11 @@ with st.sidebar:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+                replaced = data.get("replaced_chunks", 0)
+                extra = f"，已替换旧版本（清理 {replaced} 个旧 chunk）" if replaced else ""
                 set_flash(
                     "success",
-                    f"{data.get('message', '上传成功')}：{data.get('chunks', 0)} 个 chunk",
+                    f"{data.get('message', '上传成功')}：{data.get('chunks', 0)} 个 chunk{extra}",
                 )
             except requests.exceptions.RequestException as e:
                 set_flash("error", f"上传失败：{e}")
@@ -177,9 +179,11 @@ with st.sidebar:
                 resp = requests.post(f"{BACKEND_URL}/documents/reindex", timeout=900)
                 resp.raise_for_status()
                 data = resp.json()
+                purged = data.get("purged_points", 0)
+                extra = f"，清理 {purged} 个陈旧 chunk" if purged else ""
                 set_flash(
                     "success",
-                    f"{data['message']}（{data.get('chunks', 0)} 个 chunk）",
+                    f"{data['message']}（{data.get('chunks', 0)} 个 chunk{extra}）",
                 )
             except requests.exceptions.RequestException as e:
                 set_flash("error", f"重建索引失败：{e}")
@@ -248,3 +252,11 @@ with st.sidebar:
         except requests.exceptions.RequestException:
             pass
         st.rerun()
+
+    # 数据流向告知
+    st.divider()
+    st.caption(
+        "⚠️ **数据流向**：上传的文档内容、你的提问，以及检索命中的原文片段，"
+        "都会发送给第三方大模型（DeepSeek / 通义千问）用于生成回答。"
+        "请勿上传涉密或含个人敏感信息的资料；详细说明见 README 的「数据与合规」。"
+    )

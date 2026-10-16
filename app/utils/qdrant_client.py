@@ -98,16 +98,20 @@ def upsert_chunks(chunks: list[dict], vectors: list[list[float]]) -> int:
     return len(points)
 
 
-def vector_search(query_vector: list[float], top_k: int = 3) -> list[dict]:
-    """向量检索，返回 [{"text": ..., "metadata": ..., "score": ...}, ...]。"""
+def vector_search(query_vector: list[float], top_k: int | None = None) -> list[dict]:
+    """向量检索，返回 [{"text": ..., "metadata": ..., "score": ...}, ...]。
+
+    top_k 传 None 时取 `.env` 的 TOP_K，避免默认值散落在多处。
+    """
     client = get_qdrant()
     if not client.collection_exists(settings.QDRANT_COLLECTION):
         return []
 
+    limit = settings.TOP_K if top_k is None else top_k
     results = client.query_points(
         collection_name=settings.QDRANT_COLLECTION,
         query=query_vector,
-        limit=top_k,
+        limit=limit,
     )
     return [
         {
@@ -185,3 +189,67 @@ def delete_by_source(source: str) -> int:
         wait=True,
     )
     return to_delete
+
+
+def replace_same_name_document(original_name: str, keep_source: str) -> dict:
+    """同名替换：删除同一 original_name 下、source 不是 keep_source 的历史数据。
+
+    :param original_name: 上传时的原始文件名（payload 里的 original_name）
+    :param keep_source:   本次入库的 source，保留不动
+    :return: {"deleted_points": int, "removed_sources": [旧 source, ...]}
+    """
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    empty = {"deleted_points": 0, "removed_sources": []}
+    if not original_name:
+        return empty
+
+    client = get_qdrant()
+    if not client.collection_exists(settings.QDRANT_COLLECTION):
+        return empty
+
+    # 同一个 original_name、但 source 不是这一次的 → 都是旧版本
+    same_name = Filter(
+        must=[FieldCondition(key="original_name", match=MatchValue(value=original_name))],
+        must_not=[FieldCondition(key="source", match=MatchValue(value=keep_source))],
+    )
+
+    to_delete = client.count(
+        collection_name=settings.QDRANT_COLLECTION,
+        count_filter=same_name,
+        exact=True,
+    ).count
+    if to_delete == 0:
+        return empty
+
+    # 先把旧版本的 source 收集出来，调用方据此删本地文件
+    removed_sources: set[str] = set()
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=settings.QDRANT_COLLECTION,
+            scroll_filter=same_name,
+            limit=256,
+            with_payload=True,
+            with_vectors=False,
+            offset=offset,
+        )
+        for p in points:
+            src = (p.payload or {}).get("source")
+            if src:
+                removed_sources.add(src)
+        if offset is None:
+            break
+
+    client.delete(
+        collection_name=settings.QDRANT_COLLECTION,
+        points_selector=same_name,
+        wait=True,
+    )
+    logger.info(
+        "同名替换：original_name=%s 清理 %d 个旧 chunk，涉及 %d 个旧来源",
+        original_name,
+        to_delete,
+        len(removed_sources),
+    )
+    return {"deleted_points": to_delete, "removed_sources": sorted(removed_sources)}

@@ -16,11 +16,16 @@
 ## 自动检查命令
 
 ```bash
+# 离线自检（不需要 Qdrant / Redis / Docker / 大模型）：文档版本替换、陈旧文件自愈、
+# 删除路径校验、接口参数约束。全通过时退出码 0，可直接接进 CI
+python scripts/verify_fixes.py
+
 # 静态检查（能自动发现的问题别靠肉眼）
-flake8 --max-line-length=100 --extend-ignore=E203,W503 app frontend tests.py
+# ⚠️ flake8 没有写进任何依赖文件，得先 `pip install flake8`，否则这条根本跑不起来
+flake8 --max-line-length=100 --extend-ignore=E203,W503 app frontend tests.py scripts
 
 # 语法编译检查
-python -m py_compile app/*.py app/**/*.py frontend/app.py tests.py
+python -m py_compile app/*.py app/**/*.py frontend/app.py tests.py scripts/verify_fixes.py
 
 # 密钥泄漏扫描
 grep -rnE "(api_key|password|secret)\s*=\s*[\"'][^\"']+" --include=*.py .
@@ -41,7 +46,7 @@ pip-audit -r requirements.txt
 - [x] 条件判断覆盖所有分支 —— `llm_client.get_llm_client()` 的 provider 分支覆盖 deepseek/qwen
 - [x] 异步函数中使用 `await`，没有遗漏 —— 全项目仅 `upload_document` 一个 async 函数，`await file.read()` 正确
 - [x] 数据库/向量库操作后，检查是否真的写入成功 —— `upsert(..., wait=True)` / `delete(..., wait=True)` 都等待确认
-- [ ] 配置项与实际实现一致 —— `RETRIEVAL_CANDIDATES` / `RERANK_CANDIDATES` 在 `config.py` 和 `.env` 里存在，但**代码从未使用**（见发现 #9）
+- [ ] 配置项与实际实现一致 —— `RETRIEVAL_CANDIDATES` / `RERANK_CANDIDATES` 在 `config.py` 和 `.env` 里存在，但**代码从未使用**（见发现 #9）；`TOP_K` 已在本轮接入（`routers/qa.py` / `services/qa_service.py` / `utils/qdrant_client.py`），不再是死配置
 
 ## 二、边界情况
 
@@ -61,12 +66,14 @@ pip-audit -r requirements.txt
 - [x] 删除文件前检查路径是否在 `UPLOAD_DIR` 内 —— `documents.py` 有 `upload_dir in source_path.parents` 判断
 - [x] CORS 配置没有 `allow_origins=["*"]` + `allow_credentials=True` —— 项目未启用 CORS 中间件（前端是服务端调用，不需要）
 - [ ] 接口有鉴权 —— 无任何鉴权，拿到 8000 端口就能上传/删除（见发现 #11）
+- [x] 中间件端口不对外暴露、Redis 有密码 —— 6333/6379 均绑 `127.0.0.1`，redis 用 `--requirepass`（**本轮之前两项都不满足**：
+  只写 `"6333:6333"` 等于绑 `0.0.0.0`，Redis 也没有密码，等于把全部文档原文和会话历史摆给同网段所有人）
 
 ## 四、健壮性
 
 - [x] LLM 调用有超时设置 —— `OpenAI(..., timeout=60.0)`
 - [ ] LLM 调用失败时有 fallback 或错误提示 —— 无重试、无降级，异常直接冒泡成 500（见发现 #12）
-- [x] 外部依赖连接失败时不会让整个应用卡死 —— 模型加载原来每次都会联网检查更新，Hub 不通时卡在 5 次重试上（实测 `/health` 超过 5 分钟不返回），**本次已修复为缓存优先离线加载**（见发现 #2）
+- [x] 外部依赖连接失败时不会让整个应用卡死 —— `utils/embedder.py` 的 `_load_model()` **先 `local_files_only=True` 纯本地加载，失败才联网**，已有缓存时不发任何网络请求；实测 `HF_HUB_OFFLINE=1`（完全禁网）下可用本地缓存正常加载（dim=512）。本地无缓存且禁网时抛 `RuntimeError` 并给出处理办法，不再卡在重试上（见发现 #2）。**注意：本条上一轮曾被标为"已修复"但代码里并没有实现，本轮才是真的落地**
 - [ ] 上传大文件时不会一次性读入内存 —— `content = await file.read()` 全量读入，且无大小限制（见发现 #14）
 - [x] 后台任务（如入库）的异常被捕获并记录日志 —— `upload_document` / `reindex_documents` 都有 try/except 并返回带原因的 500
 
@@ -99,8 +106,12 @@ pip-audit -r requirements.txt
 ## 八、可测试性
 
 - [ ] 核心函数不依赖全局状态（或通过参数传入） —— `utils/` 里有模块级单例（`_model` / `_client`），不利于单测（见发现 #17）
-- [ ] 有单元测试覆盖关键路径（pytest） —— 无。仓库里的 `tests.py` 名字有误导性，它是批量入库脚本，不是测试用例（见发现 #13）
-- [ ] 测试用 mock 替代真实 LLM 调用 —— 无测试
+- [ ] 有单元测试覆盖关键路径（pytest） —— 仍无 pytest 用例：仓库里的 `tests.py` 是批量入库脚本，
+  不是测试。**部分兑现**：第二轮加了 `scripts/verify_fixes.py`（43 项断言，桩对象 + 临时目录，
+  不依赖 Docker/Qdrant/大模型），把版本替换、陈旧文件自愈、删除路径校验、参数约束钉住了；
+  但它是一次性脚本、不是能增量成长的测试套件（见发现 #13）
+- [ ] 测试用 mock 替代真实 LLM 调用 —— `scripts/verify_fixes.py` 用桩对象替代了 Qdrant 与向量化，
+  但 LLM 调用路径（`qa_service.rewrite_query` / `chat`）仍无覆盖
 - [ ] 测试数据不依赖本地文件（用临时目录） —— 无测试
 
 ## 九、依赖管理
@@ -114,7 +125,7 @@ pip-audit -r requirements.txt
 
 - [x] README 有项目简介、架构图、快速开始 —— 见 `README.md`
 - [x] 所有 API 在 `/docs` 中有描述 —— FastAPI 自动生成，router 有 tags，函数有 docstring
-- [x] `.env.example` 列出了所有必需的环境变量（不含真实值） —— 见 `.env.example`
+- [x] `.env.example` 列出了所有必需的环境变量（不含真实值） —— 见 `.env.example`。**上一轮漏了前端实际读取的 `BACKEND_URL`**，本轮已补上
 - [x] 有 `docs/` 目录存放详细文档 —— `ARCHITECTURE.md` / `DEMO.md` / 本文件
 
 ## 十一、Docker/部署
@@ -131,7 +142,9 @@ pip-audit -r requirements.txt
 
 - [x] `git status` 确认没有意外文件被追踪 —— 已核对
 - [x] `git diff` 检查每一处改动 —— 已逐文件核对
-- [x] 提交信息清晰（`feat:` / `fix:` / `docs:` 前缀）
+- [ ] 提交信息清晰（`feat:` / `fix:` / `docs:` 前缀） —— **未通过**：`git log --pretty=%s` 实际是
+  `知识库问答系统第一次上传` / `新修改` / `xinjingxiang` / `1`，与规范完全不符（历史信息无法追溯修改，
+  从下一次提交起执行）
 - [x] 没有 `TODO` / `FIXME` 遗留
 - [x] 跑一遍端到端测试（上传 → 提问 → 引用 → 多轮对话 → 删除）—— **15/15 通过**，见下方记录
 
@@ -162,14 +175,14 @@ pip-audit -r requirements.txt
 | # | 维度 | 问题 | 位置 | 严重度 | 处理 |
 |---|---|---|---|---|---|
 | 1 | 边界 | `UploadFile.filename` 为 `None` 时 `os.path.splitext` 抛 `TypeError` → 500 | `app/routers/documents.py` | 中 | ✅ 已修（改 400） |
-| 2 | 健壮性 | 模型已缓存仍每次联网检查更新，Hub 不通时卡死数分钟 | `app/utils/embedder.py` | **高** | ✅ 已修（缓存优先离线加载） |
-| 3 | 可读性 | 14 处 `print` 调试语句（含 5 处 `[DEBUG]`） | 6 个文件 | 低 | ✅ 已修（改 logging） |
+| 2 | 健壮性 | 模型已缓存仍每次联网检查更新，Hub 不通时卡死数分钟 | `app/utils/embedder.py` | **高** | ✅ 已修（本轮落地：`_load_model()` 先 `local_files_only=True`，失败才联网；`HF_HUB_OFFLINE=1` 下实测可离线加载） |
+| 3 | 可读性 | 14 处 `print` 调试语句（含 5 处 `[DEBUG]`） | 6 个文件 | 低 | ✅ 已修（改 logging；`embedder.py` 里残留的最后 2 处于本轮一并改掉） |
 | 4 | 可读性 | E402 模块级 import 不在文件顶部 ×2 | `documents.py`、`frontend/app.py` | 低 | ✅ 已修 |
 | 5 | 一致性 | E302 函数前缺空行 | `frontend/app.py` | 低 | ✅ 已修 |
 | 6 | 可读性 | 未使用的 import：`shutil`、`settings` | `documents.py`、`qa_service.py` | 低 | ✅ 已修 |
 | 7 | 一致性 | `HF_ENDPOINT` 未纳入 `Settings`，只散落在 `os.environ` | `app/config.py` | 低 | ✅ 已修 |
 | 8 | 性能 | 前端每次 rerun 都请求 `/documents/list` | `frontend/app.py` | 中 | ✅ 已修（5s 缓存 + 主动失效） |
-| 9 | 正确性 | `RETRIEVAL_CANDIDATES` / `RERANK_CANDIDATES` 配置项从未被使用 | `app/config.py` | 低 | ⚠️ 遗留（属未实现功能，见后续计划） |
+| 9 | 正确性 | `RETRIEVAL_CANDIDATES` / `RERANK_CANDIDATES` 配置项从未被使用 | `app/config.py` | 低 | ⚠️ 遗留（属未实现功能，见后续计划）；同类的 `TOP_K` 已于本轮接入，不再是死配置 |
 | 10 | 安全 | 上传只校验扩展名，未校验 MIME | `app/routers/documents.py` | 低 | ⚠️ 遗留 |
 | 11 | 安全 | 接口无鉴权，可任意上传/删除 | 全局 | **高** | ⚠️ 遗留（已列入已知限制） |
 | 12 | 健壮性 | LLM 调用无重试/降级，失败即 500 | `app/services/qa_service.py` | 中 | ⚠️ 遗留 |
@@ -195,3 +208,49 @@ pip-audit -r requirements.txt
 3. **P1**：LLM 超时重试 + 降级（发现 #12）、`depends_on` healthcheck（发现 #18）
 4. **P1**：单元测试与 CI（发现 #13）
 5. **P2**：MIME 校验、`schemas/` 目录、`pip-audit` 纳入 CI、`.dockerignore` 收紧
+
+---
+
+## 第二轮修复记录（2026-10-13，外部评审之后）
+
+外部评审指出"清单里有多处勾选与代码事实不符"，逐条复核后**确认成立**。本轮把能立刻修的三项落地，
+每项都附**可复现的验证方式**（这一轮不再凭印象打勾，凡是写了"已修"的都要能当场跑出来）：
+
+| # | 问题 | 改动 | 怎么验证 |
+|---|---|---|---|
+| P0-2 | 全新 clone 没有 `documents/`，`backend.Dockerfile` 的 `COPY documents/` 会让镜像构建失败，README/DEPLOY 的"三步启动"跑不通 | `.gitignore` 的 `documents/` 改为 `documents/*` + `!documents/.gitkeep`，并新增 `documents/.gitkeep` | clone 到临时目录后 `documents/` 存在；`git check-ignore documents/<哈希>.pdf` 仍命中（上传内容不进仓库、`git status` 不会被弄脏） |
+| P0-3 | 清单写着"缓存优先离线加载"、`ARCHITECTURE.md` 当既成事实写了三处，但 `embedder.py` 里**根本没有这个逻辑**（`SentenceTransformer()` 未传 `local_files_only`） | 新增 `_load_model()`：先 `local_files_only=True` 纯本地加载，失败才联网；禁网且无缓存时抛带处理办法的 `RuntimeError`；残留的 2 处 `print` 一并改 `logging` | `HF_HUB_OFFLINE=1 python -c "import app.utils.embedder as e; print(len(e.embed_query('x')))"` → 输出 `512`，证明全程未联网也能加载 |
+| P0-4 | `TOP_K` 是**死配置**（`config.py` 里定义后再无引用），而 `DEPLOY.md` Q10 却指导用户调它来解决检索质量问题；真正生效的是三处硬编码 `3` | `AskRequest.top_k` 默认取 `settings.TOP_K` 并加 `ge=1, le=20`；`qa_service.answer_question` / `qdrant_client.vector_search` 用 `None` 回落到 `settings.TOP_K`；前端不再传 `top_k` | `TOP_K=7 python -c "from app.routers.qa import AskRequest; print(AskRequest(question='x').top_k)"` → `7`；`top_k=0 / 21 / 100000` 均被拒 |
+| P0-5 | 6333 / 6379 发布在 `0.0.0.0` 上（不写绑定 IP 时 Docker 默认绑所有网卡），且 Redis 无密码、Qdrant 无鉴权 —— 同网段任何人都能读走全部文档原文与会话历史 | `docker-compose.yml`：两个端口都改成 `127.0.0.1:端口:端口`；redis 加 `--requirepass ${REDIS_PASSWORD:-kb-qa-local-dev}`（密码可取默认值，端口只绑本机）；`config.py` 增加 `REDIS_PASSWORD`，`redis_client` 用 `password=settings.REDIS_PASSWORD or None` | `docker compose config` 渲染结果里 qdrant/redis 均为 `host_ip: 127.0.0.1`，redis 命令含 `--requirepass`；实测不带密码 `redis-cli ping` 返回 `NOAUTH`、带密码返回 `PONG` |
+| P1-1 | 文档改版后产生**孤儿向量**：落盘名是内容哈希、point id 又是 `(source, text)`，改了内容就是新 source，旧向量无人清理 → 检索同时召回新旧两版 | 新增 `qdrant_client.replace_same_name_document()`：按 `original_name` 删同名旧版本（`must_not` 排除本次 source）；上传成功后调用，并删掉旧本地文件；`ingest_service` 对"文件名是哈希、内容已变"的陈旧文件自动改名 + 清理旧 source（`purged_points`）；`_remove_local_file()` 抽出共用的路径校验 | `python scripts/verify_fixes.py` → **PASS 34 / FAIL 0**（桩客户端验证只删同名旧版本、保留新版本与别的文档；临时目录验证改名/去重/幂等/非哈希名不受影响；路径校验拒绝目录外文件） |
+| P1-2 | 私有文档被 `COPY documents/` 打进镜像层，`docker push` 即泄漏；同时这行也是"全新 clone 构建失败"的元凶 | 删除 `backend.Dockerfile` 的 `COPY documents/`，并把 `documents/` 加进 `.dockerignore`（运行时由 bind mount 提供，镜像里不需要） | `grep -n documents backend.Dockerfile .dockerignore` → Dockerfile 里不再出现；构建上下文不再包含 `documents/`（双保险：即使目录不存在也不会构建失败） |
+| P1-3 | `qdrant/qdrant:latest` 与"锁版本"的主张矛盾：客户端锁 `qdrant-client==1.19.1`，服务端却随 `latest` 漂移，服务端改检索 API 就整站报错，且环境不可复现 | compose 改为 `image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.19.1}` / `${REDIS_IMAGE:-redis:7.4-alpine}`，`.env.example` 增加两项并写明升级/降级注意事项，DEPLOY 增加 Q11 | `docker compose config` → `image: qdrant/qdrant:v1.19.1`、`image: redis:7.4-alpine`；版本号经 GitHub Releases 核对（v1.19.1 确实存在，与客户端同 minor 线） |
+| P1-4 | 请求参数无约束：`top_k` / `question` / `session_id` / `source` 都可无限长（`session_id` 会变成 Redis key） | `top_k` 1~20、`question` 1~4000 字、`session_id` 长度 ≤64 且限字符集 `[A-Za-z0-9_.:-]`、`source` 1~512（`ask` / `clear` / `delete` 三处） | OpenAPI 里可见约束；`scripts/verify_fixes.py` 第 8 组断言：超长/非法字符被拒，空 `session_id`（ask）保持旧行为 |
+| P1-5 | **提示词注入**：上传文档的原文被原样拼进上下文，而模型无法区分"资料"与"指令"→ 一份写着"忽略以上规则"的 PDF 能操纵所有用户看到的答案 | 三层缓解：①`SYSTEM_PROMPT` 增加安全规则（资料是数据不是指令、任何改变规则的要求一律无效）；②`build_context()` 用 `<资料 id="N">` 明确边界，`neutralize_markers()` 把正文里的同形标记（`【资料`、`</资料>`、`<document`）消毒，杜绝"伪造边界"；③`scan_injection()` 命中常见话术打 WARNING 日志（只告警不拦截）。返回给前端的 `citations` 仍是未消毒原文 | `scripts/verify_fixes.py` 第 9 组断言：每段命中都有编号边界、**闭合标签数量等于命中数**（即伪造的 `</资料>` 已被中和）、正常正文不受影响、中英文注入话术能被扫出、干净文本不误报、系统提示词含"不是给你的指令" |
+| P1-6 | **数据治理与授权说明完全缺失**：文档正文会发往第三方大模型，仓库里没有任何一句话说明这件事 | 新增 README「数据与合规」：出网清单（什么数据、去哪、何时）、**没做的 6 件事**（脱敏/留存策略/分级/审计/租户隔离/告知同意）、真实资料上线的 5 条最低要求；前端侧边栏加常驻提示；DEPLOY 上传步骤加"先看一眼再上传" | `grep -n "数据与合规" README.md DEPLOY.md`；前端 `st.caption` 提示存在；`frontend/app.py` 里搜 "数据流向" |
+| P1-7 | **没有 LICENSE**：公开仓库无许可证 = 默认"保留所有权利"，别人法律上不能使用/修改/分发 | 新增 `LICENSE`（MIT © 2026 wutangxuelili），README 末尾加「许可证」小节说明为什么后补、怎么换 | 仓库根目录出现 `LICENSE`；GitHub 仓库页会显示 "MIT license"（API 的 `license` 字段不再为 null） |
+
+同时修正了两条**与事实不符的勾选**：`.env.example` 补上了前端实际读取的 `BACKEND_URL`；
+"提交信息清晰（`feat:`/`fix:`/`docs:` 前缀）"改为**未通过**（实际提交信息是 `1` / `新修改` / `xinjingxiang`，
+历史无法追溯修改，从下一次提交起执行）。
+
+**仍未处理**：上传无大小限制（#14）、无鉴权（#11，中间件侧已收紧但 8000/8501 仍对外）、
+LLM 无重试降级（#12）、无 pytest 与 CI（#13，已有 `scripts/verify_fixes.py` 43 项断言可作 CI 起点）、
+requirements 未瘦身（P2-1）、会话历史只 RPUSH 不 LTRIM、`python:3.11-slim` 未按 digest 锁、
+`depends_on` 无 healthcheck、文档身份仍靠 `original_name` 猜、**提示词注入只缓解未根治**
+（真正的边界是"谁能上传"，当前任何人都能上传）。
+（GitHub 仓库可见性已改为 Public；6333/6379 暴露见 P0-5。）
+
+---
+
+## 第三轮：收尾（一键启动 / 精简 / 清理）
+
+| 项 | 改动 | 怎么验证 |
+|---|---|---|
+| **一键启动** | `docker-compose.yml` 的 `env_file` 改为 `required: false`；Redis 密码在 compose 里给默认值 `${REDIS_PASSWORD:-kb-qa-local-dev}` 并由 compose 注入后端（redis 与 backend 取值必然一致）；缺 LLM Key 时 `answer_question()` 直接返回填写指引而不是抛异常；`/health` 增加 `llm.api_key_configured` | 在没有 `.env` 的目录里 `docker compose config` 退出码 0、密码与端口落到默认值；`docker compose up -d --build` 一条命令拉起 4 个容器 |
+| **精简注释** | 移除前两轮为解释"为什么这么修"而写的大段注释（历史背景、旧行为对照、教训），只保留说明非显然行为的短注释；相关理由移到 README / ARCHITECTURE / DEPLOY | `git diff` 里不再出现"曾长期是死配置""本次已修复"这类叙述 |
+| **不上传的文件** | `HR评审报告.md` 加入 `.gitignore`；`docs/DEMO.md` 执行 `git rm --cached`（本地保留、不再跟踪，`.gitignore` 也已忽略） | `git status` 不再列出评审报告；`git ls-files docs/` 里没有 `DEMO.md` |
+| **注释/文档一致性** | README、DEPLOY、ARCHITECTURE 全部按最终代码重写相关段落（一键启动、端口配置项、`/health` 字段、数据合规、许可证） | README 的「三步启动」已改为「一键启动」；DEPLOY 步骤 2 标为【可选】 |
+
+> 提醒：`docs/DEMO.md` 在历史提交里仍然存在（GitHub 的提交记录可回看）。
+> 若要让它在远端彻底消失，需要重写历史（`git filter-repo`）并强推 —— 对录屏脚本这种内容通常不值得。

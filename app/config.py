@@ -40,6 +40,8 @@ class Settings:
     REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
     REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
     REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
+    # Redis 密码（容器里由 compose 注入，本地开发留空表示无密码）
+    REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
     # 会话过期时间（秒）
     SESSION_EXPIRE_SECONDS: int = int(os.getenv("SESSION_EXPIRE_SECONDS", "86400"))
 

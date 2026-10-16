@@ -118,6 +118,8 @@ foreach ($p in 8000,8501,6333,6379) {
 
 ## 快速开始（10 分钟）
 
+**最省事的路径**：步骤 1 克隆 → 步骤 3 启动，两条命令就完事；步骤 2 的 `.env` 是"想提问时"再补的。
+
 ### 步骤 1：克隆仓库 【必须】
 
 ```powershell
@@ -139,34 +141,36 @@ Get-ChildItem docker-compose.yml, backend.Dockerfile, frontend.Dockerfile
 
 ---
 
-### 步骤 2：创建配置文件 .env 【必须】
+### 步骤 2：创建配置文件 .env 【可选，但想提问就要做】
 
-`.env` 保存密钥，**不会进 Git 仓库**。仓库里给的是模板 `.env.example`，复制一份改名字：
+**先明确一点：不建 `.env` 也能一键启动。** 四个容器会用内置默认值跑起来（Redis 用默认密码
+`kb-qa-local-dev`、端口 6333/6379、镜像版本也都有默认值），上传文档、文档管理、检索都能用。
+**只有"生成回答"需要大模型 Key** —— 没配 Key 时提问不会报错，界面会直接告诉你该去哪里填。
+
+想开问答就复制模板并填 Key：
 
 ```powershell
 Copy-Item .env.example .env
-```
-
-**然后必须编辑 `.env`，最少改一个变量**：
-
-用记事本打开：
-
-```powershell
 notepad .env
 ```
 
-找到下面这一行（第 12 行），把 `sk-请替换成你自己的Key` **整段替换**成你真实的 Key：
+**要改的地方：大模型 Key。** 把 `sk-请替换成你自己的Key` **整段替换**成你真实的 Key：
 
 ```
 LLM_API_KEY=sk-请替换成你自己的Key
 ```
 
-**如果你用的是通义千问**，需要改两个地方（`LLM_PROVIDER` 改成 `qwen`，并填 `DASHSCOPE_API_KEY`）：
+**如果你用的是通义千问**，改两个地方（`LLM_PROVIDER` 改成 `qwen`，并填 `DASHSCOPE_API_KEY`）：
 
 ```
 LLM_PROVIDER=qwen
 DASHSCOPE_API_KEY=sk-请替换成你自己的Key
 ```
+
+> 顺带说明：`.env.example` 里的 `REDIS_PASSWORD` 留空时，容器会用默认密码
+> `kb-qa-local-dev`（Redis 只绑 `127.0.0.1`，仅本机可访问，够用）。
+> 若你改过端口绑定、准备给别人访问，务必把它换成一串自己的密码 —— 改完执行
+> `docker compose up -d --force-recreate redis backend`，让两个容器拿到同一个新密码。
 
 改完保存并关闭记事本。
 
@@ -194,7 +198,7 @@ docker compose up -d --build
 
 **首次执行会做这几件事**（这就是耗时的地方）：
 
-1. 下载 `qdrant/qdrant:latest` 和 `redis:7-alpine` 两个现成镜像
+1. 下载 `qdrant/qdrant:v1.19.1` 和 `redis:7.4-alpine` 两个现成镜像（版本已钉死，见 `.env` 的 `QDRANT_IMAGE` / `REDIS_IMAGE`）
 2. 构建后端镜像（要下载 PyTorch 等约 2 GB 的依赖）—— 最慢的一步
 3. 构建前端镜像
 4. 依次启动 4 个容器
@@ -215,9 +219,12 @@ docker compose ps
 NAME                          SERVICE    STATUS         PORTS
 project-zhishiku-backend-1    backend    Up 2 minutes   0.0.0.0:8000->8000/tcp
 project-zhishiku-frontend-1   frontend   Up 2 minutes   0.0.0.0:8501->8501/tcp
-project-zhishiku-qdrant-1     qdrant     Up 2 minutes   0.0.0.0:6333->6333/tcp
-project-zhishiku-redis-1      redis      Up 2 minutes   0.0.0.0:6379->6379/tcp
+project-zhishiku-qdrant-1     qdrant     Up 2 minutes   127.0.0.1:6333->6333/tcp
+project-zhishiku-redis-1      redis      Up 2 minutes   127.0.0.1:6379->6379/tcp
 ```
+
+> 端口前面有 `127.0.0.1:` 是**故意的**：Qdrant 和 Redis 只允许本机访问（6379 被本机其他程序占用时会显示
+> `127.0.0.1:16379->6379/tcp`，见 Q1）。`8000` / `8501` 没有前缀，表示同网络的其他设备也能打开界面。
 
 如果某个容器是 `Exit` 或反复重启，看它的日志（把 `backend` 换成出问题的服务名）：
 
@@ -250,10 +257,14 @@ curl.exe -s http://localhost:8000/health
 
 ```json
 {"status":"ok","qdrant":{"exists":true,"indexed_vectors_count":0,"points_count":0,"status":"green"},
- "embedding":{"model":"BAAI/bge-small-zh-v1.5","dim":512}}
+ "embedding":{"model":"BAAI/bge-small-zh-v1.5","dim":512},
+ "llm":{"provider":"deepseek","model":"deepseek-chat","api_key_configured":true}}
 ```
 
 **首次运行会等 30 秒 ~ 2 分钟**（在下载 BGE 模型），之后就是秒回。
+
+> `llm.api_key_configured` 是给你自查用的：`false` 表示还没填 Key —— 此时上传/检索都正常，
+> 只有提问会被拒并提示你该填哪个变量。
 
 **看到这些就说明有问题**：
 
@@ -261,7 +272,7 @@ curl.exe -s http://localhost:8000/health
 |---|---|
 | 连接被拒绝 / 无法访问 | backend 容器没起来，回步骤 3 看日志 |
 | `"status"` 不是 `ok` | Qdrant 没连上，检查 qdrant 容器状态 |
-| 返回 500 | 通常是 `.env` 里 Key 没填对 |
+| 提问返回 500 | 通常是 `.env` 里 Key 填错或余额不足（没填 Key 不会 500，界面会给提示） |
 
 **预计耗时**：30 秒 ~ 2 分钟（首次，含模型下载）。
 
@@ -291,6 +302,10 @@ Start-Process http://localhost:8501
 
 仓库自带了示例文档 `test_docs/sample.md`，直接用它最省事。
 
+> ⚠️ **先看一眼再上传**：上传的文档正文会在提问时发送给第三方大模型（DeepSeek / 通义千问）。
+> 这一步请只用示例文档或公开资料，别拿涉密/含个人信息的文件试手 —— 详见
+> [`README.md` 的「数据与合规」](README.md#数据与合规)。前端侧边栏也有同样的常驻提示。
+
 在步骤 5 打开的页面左侧：
 
 1. 点「上传文档（PDF / Markdown / TXT）」的 **Browse files** 按钮
@@ -309,7 +324,8 @@ curl.exe -s -X POST http://localhost:8000/documents/upload -F "file=@./test_docs
 预期返回：
 
 ```json
-{"message":"上传并入库成功","filename":"xxxx.md","original_name":"sample.md","chunks":8}
+{"message":"上传并入库成功","filename":"xxxx.md","original_name":"sample.md","chunks":8,
+ "replaced_chunks":0,"removed_old_files":0}
 ```
 
 > 重复上传同一个文件不会产生重复数据，会返回 `"文件已存在，已重新入库"`，这是正常的。
@@ -352,9 +368,12 @@ docker compose logs --tail 50 backend
 - [ ] `docker --version` 和 `docker compose version` 都有版本号输出
 - [ ] `docker info` 能看到 `Server Version`（引擎在运行）
 - [ ] 已克隆仓库，`docker-compose.yml` 存在
-- [ ] 已用 `Copy-Item .env.example .env` 创建 `.env`，且**没有任何 `请替换成你自己的Key` 残留**
-- [ ] `docker compose ps` 显示 **4 个容器 Up**（qdrant / redis / backend / frontend）
-- [ ] http://localhost:8000/health 返回 `"status":"ok"`（后端 /health 返回 ok）
+- [ ] `docker compose up -d --build` **一条命令**就把 4 个容器拉起来了（不需要先准备 `.env`）
+- [ ] （要开问答才需要）已用 `Copy-Item .env.example .env` 创建 `.env`、填好 Key，
+      且**没有任何 `请替换成你自己的Key` 残留**
+- [ ] `docker compose ps` 显示 **4 个容器 Up**（qdrant / redis / backend / frontend），
+      qdrant / redis 的端口带 `127.0.0.1:` 前缀（6379 被占用时是 `16379`）
+- [ ] http://localhost:8000/health 返回 `"status":"ok"`，且 `llm.api_key_configured` 是 `true`
 - [ ] http://localhost:8000/docs 能打开 Swagger 接口文档
 - [ ] http://localhost:8501 前端页面能打开（不是 Connection error）
 - [ ] 上传 `test_docs/sample.md` 后提示「上传并入库成功」，且「已入库文档」里出现该文件（能上传文档）
@@ -370,13 +389,13 @@ docker compose logs --tail 50 backend
 **现象**：`docker compose up` 报错，类似
 `Error response from daemon: Ports are not available: exposing port TCP 0.0.0.0:8501 -> ... address already in use`。
 
-**原因**：8000 / 8501 / 6333 / 6379 中某个端口被别的程序占了
-（常见元凶：本机已装过 PostgreSQL 占 6379、已有的其他 Web 服务占 8000、另一个 Docker 项目占了同一端口）。
+**原因**：8000 / 8501 / 6333 / 6379（或你改过的 `*_HOST_PORT`）中某个端口被别的程序占了
+（常见元凶：本机装了原生 Redis 服务占 6379、已有的其他 Web 服务占 8000、另一个 Docker 项目占了同一端口）。
 
-**解决**：先找出是谁占的：
+**解决**：先找出是谁占的（把端口号换成报错里的那个）：
 
 ```powershell
-Get-NetTCPConnection -LocalPort 8000 -State Listen |
+Get-NetTCPConnection -LocalPort 6379 -State Listen |
   Select-Object LocalPort, OwningProcess,
     @{n='Process';e={(Get-Process -Id $_.OwningProcess).ProcessName}}
 ```
@@ -384,9 +403,41 @@ Get-NetTCPConnection -LocalPort 8000 -State Listen |
 确认不需要后，二选一：
 
 - 停掉占用进程（在任务管理器里结束它，或 `Stop-Process -Id <PID>`）
-- **或者改本项目对外暴露的端口**：编辑 `docker-compose.yml`，把 `"8000:8000"` 改成 `"18000:8000"`
+- **或者改本项目对外暴露的端口**（推荐，不动别人）：编辑 `docker-compose.yml`，把 `"8000:8000"` 改成 `"18000:8000"`
   （左边是本机端口可随便改，右边是容器内端口**不能改**），然后重新 `docker compose up -d`。
   改完访问地址也相应变成 `http://localhost:18000/docs`。
+
+#### 已实测的坑：本机原生的 Redis 服务占着 6379
+
+Windows 上如果装过 Redis（`Get-Service Redis` 能看到，且 `StartType` 是 `Automatic`），
+它会**开机自启并一直占着 127.0.0.1:6379**，Docker 里的 Redis 就再也绑不上，报：
+
+```
+Error response from daemon: ports are not available: exposing port TCP 127.0.0.1:6379 -> 127.0.0.1:0:
+listen tcp4 127.0.0.1:6379: bind: Only one usage of each socket address ... is normally permitted
+```
+
+**光停进程没用**（服务下次开机又起来）。正确做法是让容器用另一个宿主机端口 —— 这两个中间件端口已经做成可配置的，
+改 `.env` 即可，**容器内端口始终不变，后端走 compose 内部网络不受影响**：
+
+```
+# .env
+QDRANT_HOST_PORT=6333
+REDIS_HOST_PORT=16379      # 本机 Redis 服务占着 6379，Docker 的 Redis 改用它
+```
+
+```powershell
+docker compose up -d --force-recreate redis
+docker compose ps          # redis 应显示 127.0.0.1:16379->6379/tcp
+```
+
+> 如果你确认那个原生服务没用，也可以停掉并禁用自启（需要管理员权限）：
+> `Stop-Service Redis; Set-Service Redis -StartupType Disabled`，
+> 然后把 `REDIS_HOST_PORT` 改回 `6379`。
+>
+> ⚠️ **改了端口绑定或密码之后第一次重启**，旧容器可能还占着端口，导致
+> `docker compose up -d --force-recreate` 失败。先 `docker compose down`（**不要加 `-v`**，
+> 那会删数据卷）把旧容器删干净，再 `docker compose up -d` 就不会撞了。
 
 ### Q2：容器起来了，但提问报鉴权错误 / 500
 
@@ -587,7 +638,7 @@ Windows 上如果 `Activate.ps1` 被执行策略拦住，先运行
 curl.exe -s -X POST http://localhost:8000/documents/reindex
 ```
 
-预期返回 `{"message":"已重新入库 2 个文件","files":2,"chunks":15}`。
+预期返回 `{"message":"已重新入库 2 个文件","files":2,"chunks":15,"purged_points":0}`。
 
 ### Q10：上传成功但提问回答「无法回答」/ 引用内容不相关
 
@@ -600,10 +651,40 @@ curl.exe -s -X POST http://localhost:8000/documents/reindex
 **解决**：
 
 - 提高 `TOP_K`：编辑 `.env`，把 `TOP_K=3` 调大到 `5` 或 `8`，然后
-  `docker compose up -d --force-recreate backend`
+  `docker compose up -d --force-recreate backend`。
+  检索条数只有这一个来源：接口参数 `top_k` 不传时就取它，前端也不再写死（上限 20，
+  防止单个请求把上下文和大模型费用一起放大）
 - 提问时更具体一些，并在问题里带上文档里的关键词
 - 确认上传的是**文本型 PDF**：扫描件（图片型 PDF）提取不出文字，入不了库；
   可以先用 `test_docs/sample.md` 验证链路本身是通的
+
+### Q11：镜像版本钉死了，启动时报 `manifest unknown` / `not found` / 数据打不开
+
+**背景**：`docker-compose.yml` 里 Qdrant 与 Redis 的镜像都**钉死了版本**
+（默认 `qdrant/qdrant:v1.19.1`、`redis:7.4-alpine`），不再用 `latest`。这样"今天能跑、明天服务端偷偷升级导致检索接口变了"这类问题不会发生，但代价是 tag 名必须写对。
+
+**情况 A：报 `manifest unknown`（tag 不存在）**
+不同项目 tag 风格不一样（有的带 `v` 有的不带）。先看你本机已有哪个 tag：
+
+```powershell
+docker images qdrant/qdrant --format "{{.Repository}}:{{.Tag}}"
+```
+
+把结果写进 `.env`（它优先于 compose 里的默认值）：
+
+```
+QDRANT_IMAGE=qdrant/qdrant:v1.19.0
+```
+
+**情况 B：Qdrant 报存储版本/数据无法打开**
+说明你**把服务端降级到了比数据卷更旧的版本**（数据是更高版本写的）。两种办法：
+
+1. 把 `QDRANT_IMAGE` 改成原来那个版本（用上面的 `docker images` 查）；
+2. 或者接受重建：`docker compose down -v` 清掉卷，再点「🔄 重建索引」从 `documents/` 恢复
+   （原始文档文件在本地磁盘上，不会丢）。
+
+**升级 Qdrant 的正确姿势**：改 `.env` 的 `QDRANT_IMAGE` → 同步升级 `requirements.txt` 里的
+`qdrant-client`（两边保持同一条 minor 线）→ 重新构建后端 → 跑一遍上传/提问确认检索正常。
 
 ---
 
@@ -652,7 +733,7 @@ docker compose down -v --rmi local
 ```
 
 `--rmi local` 会删掉本项目自己构建的 `project-zhishiku-backend` 和 `project-zhishiku-frontend` 镜像
-（不会删掉 `qdrant/qdrant` 和 `redis:7-alpine` 这两个公共镜像）。
+（不会删掉 `qdrant/qdrant` 和 `redis` 这两个公共镜像）。
 下次启动需要重新构建，**耗时回到 3~10 分钟**。
 
 **确认清理干净**：
@@ -695,8 +776,24 @@ backend 还会主动出网访问两个外部服务：
 |---|---|---|---|---|---|
 | `frontend` | `frontend.Dockerfile` | 8501 | http://localhost:8501 | 聊天界面 + 文档管理 | 无（状态在浏览器和 Redis） |
 | `backend` | `backend.Dockerfile` | 8000 | http://localhost:8000/docs | FastAPI 接口、RAG 编排 | `documents/` 目录挂载 |
-| `qdrant` | `qdrant/qdrant:latest` | 6333 | http://localhost:6333/dashboard | 向量数据库 | 卷 `qdrant_data` |
-| `redis` | `redis:7-alpine` | 6379 | 无需浏览器访问 | 会话历史存储 | 卷 `redis_data` |
+| `qdrant` | `qdrant/qdrant:v1.19.1`（`.env` 的 `QDRANT_IMAGE` / `QDRANT_HOST_PORT` 可覆盖） | 6333 | http://localhost:6333/dashboard（**仅本机**） | 向量数据库 | 卷 `qdrant_data` |
+| `redis` | `redis:7.4-alpine`（`.env` 的 `REDIS_IMAGE` / `REDIS_HOST_PORT` 可覆盖） | 6379 | 无需浏览器访问（**仅本机 + 密码**，宿主机端口默认 6379，被占用时改 `REDIS_HOST_PORT`） | 会话历史存储 | 卷 `redis_data` |
+
+#### 端口只绑本机的原因（安全）
+
+`docker-compose.yml` 里 Qdrant 和 Redis 写的是 `"127.0.0.1:6333:6333"` 这种三段的写法。
+三段分别是 `绑定IP:宿主机端口:容器端口`；**只写两个数字时 Docker 默认绑 `0.0.0.0`（所有网卡）**，
+同一局域网里的别人就能直接 `你的IP:6333` 访问 —— 而 Qdrant 没有鉴权、Redis 那时也没有密码，
+等于把全部文档原文和会话历史摆在公网上。现在两者都只绑回环地址：
+
+- 你自己访问 `localhost:6333` / 用 `redis-cli` 连本机：**照常**；
+- 别的机器访问你的 `6333` / `6379`：**连不上**（这正是目的）；
+- 容器之间（backend → `qdrant:6333` / `redis:6379`）走的是 compose 内部网络，
+  **不经过发布端口，完全不受影响** —— 这是最常见的担心，可以放心。
+
+`8000`（后端）和 `8501`（前端）仍然是 `0.0.0.0`，为了方便你用手机或另一台电脑打开界面。
+代价是：同一网络里的人也能调用上传/删除接口（项目没有鉴权）。如果你不需要跨设备访问，
+把这两行也改成 `"127.0.0.1:8000:8000"` / `"127.0.0.1:8501:8501"` 即可。
 
 ### 三个数据卷
 

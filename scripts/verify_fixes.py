@@ -1,13 +1,9 @@
-"""离线自检脚本：验证"文档版本替换 / 陈旧文件自愈 / 删除路径校验 / 接口参数校验"。
+"""离线自检：文档版本替换、陈旧文件自愈、删除路径校验、接口参数校验、提示词注入防线。
 
-为什么需要它：这些改动很难靠肉眼确认（涉及 Qdrant 过滤条件、文件改名、Pydantic 约束），
-而单元测试还没落地（见 docs/code_review_checklist.md）。本脚本用**桩对象 + 临时目录**
-把关键行为钉住，**不需要 Qdrant / Redis / Docker / 大模型**，可以在任何环境跑。
+用桩对象 + 临时目录实现，不需要 Qdrant / Redis / Docker / 大模型。
+输出为 ASCII，避免 Windows 控制台把中文打成乱码。
 
-用法：
-    python scripts/verify_fixes.py      # 全通过时退出码 0，有失败时退出码 1
-
-注意：输出刻意使用 ASCII，避免 Windows 控制台编码把中文打成乱码，方便直接当证据贴出来。
+用法：python scripts/verify_fixes.py    # 全通过退出码 0，有失败退出码 1
 """
 
 from __future__ import annotations

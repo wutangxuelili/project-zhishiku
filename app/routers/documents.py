@@ -3,14 +3,28 @@ import os
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.services.ingest_service import ingest_directory, ingest_file
 from app.utils.loader import SUPPORTED_SUFFIXES
-from app.utils.qdrant_client import delete_by_source, list_sources
+from app.utils.qdrant_client import (
+    delete_by_source,
+    list_sources,
+    replace_same_name_document,
+)
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
+
+
+def _remove_local_file(source: str) -> bool:
+    """删除上传目录内的文件；路径不在上传目录内则拒绝（防目录穿越）。"""
+    upload_dir = Path(settings.UPLOAD_DIR).resolve()
+    source_path = Path(source).resolve()
+    if upload_dir in source_path.parents and source_path.is_file():
+        source_path.unlink()
+        return True
+    return False
 
 
 @router.post("/upload")
@@ -53,11 +67,17 @@ async def upload_document(file: UploadFile = File(...)):  # noqa: B008
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"入库失败：{e}")
 
+    # 4. 同名替换：文档改版时，清掉旧版本的向量和旧文件（先入库新的，成功后再删旧的）
+    replaced = replace_same_name_document(filename, keep_source=file_path)
+    removed_files = sum(1 for src in replaced["removed_sources"] if _remove_local_file(src))
+
     return {
         "message": "文件已存在，已重新入库" if existed else "上传并入库成功",
         "filename": unique_name,
         "original_name": filename,
         "chunks": chunk_count,
+        "replaced_chunks": replaced["deleted_points"],
+        "removed_old_files": removed_files,
     }
 
 
@@ -82,7 +102,7 @@ def list_documents():
 
 
 class DeleteRequest(BaseModel):
-    source: str
+    source: str = Field(min_length=1, max_length=512)
 
 
 @router.post("/delete")
@@ -94,12 +114,7 @@ def delete_document(request: DeleteRequest):
         raise HTTPException(status_code=404, detail=f"未找到来源：{request.source}")
 
     # 2. 安全删除本地文件
-    upload_dir = Path(settings.UPLOAD_DIR).resolve()
-    source_path = Path(request.source).resolve()
-
-    # 只有当文件确实位于上传目录内，才删除
-    if upload_dir in source_path.parents and source_path.is_file():
-        source_path.unlink()
+    _remove_local_file(request.source)
 
     return {
         "message": "删除成功",

@@ -6,6 +6,7 @@ from app.config import settings
 from app.routers.documents import router as documents_router
 from app.routers.qa import router as qa_router
 from app.utils.embedder import embed_query
+from app.utils.llm_client import get_model_name, has_api_key
 from app.utils.qdrant_client import collection_info, ensure_collection
 
 logging.basicConfig(
@@ -42,4 +43,9 @@ def health_check():
         "status": "ok",
         "qdrant": collection_info(),
         "embedding": {"model": settings.EMBEDDING_MODEL, "dim": len(test_vec)},
+        "llm": {
+            "provider": settings.LLM_PROVIDER,
+            "model": get_model_name(),
+            "api_key_configured": has_api_key(),
+        },
     }

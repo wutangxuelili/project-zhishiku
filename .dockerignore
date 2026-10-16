@@ -8,3 +8,5 @@ frontend/__pycache__/
 app/__pycache__/
 *.md
 test_docs/
+# 用户上传的私有文档不进镜像（运行时由 compose bind mount 提供）
+documents/
